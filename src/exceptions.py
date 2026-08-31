@@ -26,3 +26,10 @@ class InvalidContentTypeError(FileStorageError):
 class FileTooLargeError(FileStorageError):
     """File size exceeds limit."""
     pass
+
+
+class DuplicateFileError(FileStorageError):
+    """Raised when a duplicate file is detected and the policy forbids it."""
+    def __init__(self, message: str, existing_record=None):
+        super().__init__(message)
+        self.existing_record = existing_record

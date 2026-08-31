@@ -112,6 +112,173 @@ def test_router_has_no_baked_in_prefix():
 
 
 @pytest.mark.asyncio
+async def test_save_file_reject_policy_raises_duplicate_error():
+    from ..service import FileService
+    from ..exceptions import DuplicateFileError
+    from ..adapters.local import LocalAdapter
+    from ..adapters.base import AdapterRegistry
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter = LocalAdapter(storage_dir=tmpdir)
+        AdapterRegistry._adapters["local"] = adapter
+        AdapterRegistry._default = "local"
+
+        service = FileService()
+
+        existing = FileRecord(
+            uuid="existing-uuid",
+            adapter_name="local",
+            module_dir="menu",
+            channel="images",
+            filename="x.png",
+            content_type="image/png",
+            size=4,
+            storage_key="menu/images/existing-uuid",
+            created_by_module="menu",
+            checksum="known",
+        )
+
+        async def fake_check(db, checksum, module, include_module=True):
+            return existing
+
+        service._check_duplicate = fake_check
+
+        fake_db = object()
+
+        with pytest.raises(DuplicateFileError) as exc:
+            await service.save_file(
+                file=b"data",
+                filename="dup.png",
+                content_type="image/png",
+                created_by_module="menu",
+                channel="images",
+                db_session=fake_db,
+                duplicate_policy="reject",
+            )
+        assert exc.value.existing_record is existing
+
+
+@pytest.mark.asyncio
+async def test_save_file_share_policy_reuses_storage_key():
+    from ..service import FileService
+    from ..adapters.local import LocalAdapter
+    from ..adapters.base import AdapterRegistry
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter = LocalAdapter(storage_dir=tmpdir)
+        AdapterRegistry._adapters["local"] = adapter
+        AdapterRegistry._default = "local"
+
+        service = FileService()
+
+        existing = FileRecord(
+            uuid="existing-uuid",
+            adapter_name="local",
+            module_dir="menu",
+            channel="images",
+            filename="x.png",
+            content_type="image/png",
+            size=4,
+            storage_key="menu/images/existing-uuid",
+            created_by_module="menu",
+            checksum="known",
+        )
+
+        async def fake_check(db, checksum, module, include_module=True):
+            return existing
+
+        service._check_duplicate = fake_check
+
+        added_records = []
+
+        class FakeSession:
+            async def add(self, record):
+                added_records.append(record)
+
+            async def flush(self):
+                pass
+
+            async def refresh(self, record):
+                pass
+
+        record = await service.save_file(
+            file=b"data",
+            filename="dup.png",
+            content_type="image/png",
+            created_by_module="menu",
+            channel="images",
+            db_session=FakeSession(),
+            duplicate_policy="share",
+        )
+
+        assert record.uuid != existing.uuid
+        assert record.storage_key == existing.storage_key
+        assert record.checksum == existing.checksum
+        assert len(added_records) == 1
+        assert added_records[0].storage_key == existing.storage_key
+        assert not await adapter.exists(record.uuid)
+        assert await adapter.exists(existing.storage_key)
+
+
+@pytest.mark.asyncio
+async def test_save_file_allow_policy_stores_separate_bytes():
+    from ..service import FileService
+    from ..adapters.local import LocalAdapter
+    from ..adapters.base import AdapterRegistry
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter = LocalAdapter(storage_dir=tmpdir)
+        AdapterRegistry._adapters["local"] = adapter
+        AdapterRegistry._default = "local"
+
+        service = FileService()
+
+        existing = FileRecord(
+            uuid="existing-uuid",
+            adapter_name="local",
+            module_dir=None,
+            channel=None,
+            filename="x.png",
+            content_type="image/png",
+            size=4,
+            storage_key="existing-uuid",
+            created_by_module="menu",
+            checksum="known",
+        )
+
+        async def fake_check(db, checksum, module, include_module=True):
+            return existing
+
+        service._check_duplicate = fake_check
+
+        added_records = []
+
+        class FakeSession:
+            async def add(self, record):
+                added_records.append(record)
+
+            async def flush(self):
+                pass
+
+            async def refresh(self, record):
+                pass
+
+        record = await service.save_file(
+            file=b"data",
+            filename="dup.png",
+            content_type="image/png",
+            created_by_module="menu",
+            db_session=FakeSession(),
+            duplicate_policy="allow",
+        )
+
+        assert record.storage_key != existing.storage_key
+        assert len(added_records) == 1
+        assert await adapter.exists(record.storage_key)
+        assert await adapter.exists(existing.storage_key)
+
+
+@pytest.mark.asyncio
 async def test_local_adapter_get_url_resolves():
     from fastapi import FastAPI, Request
     from starlette.testclient import TestClient

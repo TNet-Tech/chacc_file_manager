@@ -8,7 +8,7 @@ from .context_factory import get_async_db, get_module_context
 from .models import FileRecord, ModuleAdapterMapping
 from .service import FileService
 from .adapters.base import AdapterRegistry
-from .exceptions import FileTooLargeError, InvalidContentTypeError
+from .exceptions import FileTooLargeError, InvalidContentTypeError, DuplicateFileError
 
 
 class ModuleMappingCreate(BaseModel):
@@ -156,6 +156,13 @@ async def upload_file(
         return {"uuid": record.uuid, "filename": record.filename, "size": record.size, "storage_key": record.storage_key}
     except (FileTooLargeError, InvalidContentTypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateFileError as e:
+        existing = e.existing_record
+        raise HTTPException(
+            status_code=409,
+            detail="File already exists",
+            headers={"X-Existing-File-Uuid": existing.uuid} if existing else None,
+        )
 
 
 @router.delete("/{uuid}", status_code=status.HTTP_204_NO_CONTENT)

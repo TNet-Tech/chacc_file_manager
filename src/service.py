@@ -6,7 +6,7 @@ import tempfile
 import os
 import json
 from pathlib import Path
-from typing import Optional, Union, AsyncIterable, List, Callable, Awaitable
+from typing import Optional, Union, AsyncIterable, List, Callable, Awaitable, Literal
 from abc import ABC, abstractmethod
 from fastapi import Request, UploadFile, HTTPException
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -20,7 +20,11 @@ from .exceptions import (
     FileNotFoundError as FileNotFound,
     InvalidContentTypeError,
     FileTooLargeError,
+    DuplicateFileError,
 )
+
+
+DuplicatePolicy = Literal["reject", "share", "allow"]
 
 
 MODULE_META_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "module_meta.json")
@@ -66,7 +70,7 @@ class BaseFileService(ABC):
         adapter_name: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
         validation_hooks: Optional[List[Callable[[Union[bytes, Path], dict, bool], Awaitable[None]]]] = None,
-        allow_duplicate: bool = False,
+        duplicate_policy: DuplicatePolicy = "reject",
         include_checksum_module: bool = True,
     ) -> FileRecord:
         pass
@@ -230,7 +234,7 @@ class FileService(BaseFileService):
         adapter_name: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
         validation_hooks: Optional[List[Callable[[Union[bytes, Path], dict, bool], Awaitable[None]]]] = None,
-        allow_duplicate: bool = False,
+        duplicate_policy: DuplicatePolicy = "reject",
         include_checksum_module: bool = True,
     ) -> FileRecord:
         if db_session is None:
@@ -311,24 +315,35 @@ class FileService(BaseFileService):
 
         existing = await self._check_duplicate(db_session, checksum, created_by_module, include_checksum_module)
         if existing:
-            if not allow_duplicate:
-                raise HTTPException(
-                    status_code=409,
-                    detail="File already exists",
+            if duplicate_policy == "reject":
+                raise DuplicateFileError("File already exists", existing_record=existing)
+
+            if duplicate_policy == "share":
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        pass
+                temp_path = None
+
+                shared_record = FileRecord(
+                    uuid=str(uuid_utils.uuid7()),
+                    adapter_name=existing.adapter_name,
+                    module_dir=existing.module_dir,
+                    channel=channel,
+                    filename=safe_filename,
+                    content_type=content_type,
+                    size=existing.size,
+                    storage_key=existing.storage_key,
+                    created_by_module=created_by_module,
+                    checksum=existing.checksum,
                 )
-
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-
-            storage_key = str(uuid_utils.uuid7())
-            use_module_dir = bool(mapping and mapping.use_module_dir)
-            if use_module_dir:
-                storage_key = f"{created_by_module}/{storage_key}"
-                if channel:
-                    storage_key = f"{created_by_module}/{channel}/{storage_key}"
+                if hasattr(shared_record, "created_by_id"):
+                    shared_record.created_by_id = created_by_user_id
+                db_session.add(shared_record)
+                await db_session.flush()
+                await db_session.refresh(shared_record)
+                return shared_record
 
         if temp_path and os.path.exists(temp_path):
             metadata = await adapter.save(storage_key, temp_path, content_type)

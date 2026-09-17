@@ -1,14 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List
-import os
 
 from .context_factory import get_async_db, get_module_context
 from .models import FileRecord, ModuleAdapterMapping
 from .service import FileService
 from .adapters.base import AdapterRegistry
-from .exceptions import FileTooLargeError, InvalidContentTypeError, DuplicateFileError
+from .exceptions import (
+    DuplicateFileError,
+    FileTooLargeError,
+    InvalidContentTypeError,
+)
+from .stream_service import StreamService, cleanup_stream_dir, sanitize_filename
 
 
 class ModuleMappingCreate(BaseModel):
@@ -153,6 +158,7 @@ async def upload_file(
             channel=form.get("channel"),
             db_session=db,
         )
+        await db.commit()
         return {"uuid": record.uuid, "filename": record.filename, "size": record.size, "storage_key": record.storage_key}
     except (FileTooLargeError, InvalidContentTypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -174,3 +180,134 @@ async def delete_file(
     deleted = await service.delete_file(uuid, db)
     if not deleted:
         raise HTTPException(status_code=404, detail="File not found")
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Resumable streaming upload endpoints (delegated to StreamService)
+# ---------------------------------------------------------------------------
+
+class StreamFinalizeResponse(BaseModel):
+    status: str
+    file_uuid: Optional[str] = None
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    storage_key: Optional[str] = None
+    message: Optional[str] = None
+    missing_chunks: Optional[list] = None
+
+
+@router.post("/stream-upload", response_model=StreamFinalizeResponse)
+async def stream_upload(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_stream_id: str = Header(..., description="Unique identifier for the upload session"),
+    x_file_name: str = Header(..., description="Desired final filename"),
+    x_chunk_number: int = Header(..., ge=1, description="Current chunk number (1-indexed)"),
+    x_final_chunk: bool = Header(..., description="True if this is the last chunk"),
+    x_total_chunks: Optional[int] = Header(default=None, description="Optional: Total expected chunks"),
+    x_content_type: str = Header(default="application/octet-stream", description="MIME type of the file"),
+    x_created_by_module: str = Header(default="chacc_file_manager", description="Module that owns the file"),
+    x_channel: Optional[str] = Header(default=None, description="Optional channel for module-scoped storage"),
+    x_duplicate_policy: str = Header(default="reject", description="reject | share | allow"),
+    db=Depends(get_async_db),
+):
+    """Resumable streaming upload endpoint.
+
+    Each request uploads a single chunk. When ``X-Final-Chunk: true`` is set,
+    all chunks are verified, concatenated, and passed to ``FileService.save_file``
+    for checksum computation, duplicate detection, and final storage.
+    """
+    stream_service = StreamService()
+
+    try:
+        await stream_service.write_chunk(
+            stream_id=x_stream_id,
+            chunk_number=x_chunk_number,
+            content_iterable=request.stream(),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write chunk: {str(e)}")
+
+    if not x_final_chunk:
+        return StreamFinalizeResponse(status="receiving", message=f"Chunk {x_chunk_number} received")
+
+    try:
+        record = await stream_service.finalize_stream(
+            stream_id=x_stream_id,
+            file_name=x_file_name,
+            content_type=x_content_type,
+            created_by_module=x_created_by_module,
+            channel=x_channel,
+            duplicate_policy=x_duplicate_policy,
+            db_session=db,
+            total_chunks=x_total_chunks,
+            final_chunk_num=x_chunk_number,
+        )
+    except DuplicateFileError as e:
+        background_tasks.add_task(cleanup_stream_dir, x_stream_id)
+        try:
+            await db.commit()
+        except Exception:
+            pass
+        existing = e.existing_record
+        raise HTTPException(
+            status_code=409,
+            detail="File already exists",
+            headers={"X-Existing-File-Uuid": existing.uuid} if existing else None,
+        )
+    except HTTPException as e:
+        background_tasks.add_task(cleanup_stream_dir, x_stream_id)
+        raise
+
+    try:
+        await db.commit()
+    except Exception:
+        pass
+
+    background_tasks.add_task(cleanup_stream_dir, x_stream_id)
+
+    return StreamFinalizeResponse(
+        status="completed",
+        file_uuid=str(record.uuid),
+        filename=record.filename,
+        size=record.size,
+        storage_key=str(record.storage_key),
+        message=f"Assembled {x_total_chunks or x_chunk_number} chunk(s)",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Retrieve an incomplete / in-progress stream by stream ID
+# ---------------------------------------------------------------------------
+
+@router.get("/stream/{stream_id}")
+async def retrieve_stream(
+    stream_id: str,
+    x_file_name: Optional[str] = Header(default=None, description="Optional filename for Content-Disposition"),
+    x_content_type: str = Header(default="application/octet-stream", description="MIME type of the stream"),
+):
+    """Stream back the contents of an in-progress or incomplete upload.
+
+    Useful for retrieving partially uploaded data (e.g. NDJSON) that may be
+    corrupt but still readable. Chunks are concatenated in numeric order based
+    on their zero-padded filenames.
+    """
+    stream_service = StreamService()
+    safe_stream_id, chunk_iter = await stream_service.retrieve_stream(stream_id)
+
+    safe_filename = sanitize_filename(x_file_name) if x_file_name else f"{safe_stream_id}.bin"
+
+    headers = {
+        "Content-Type": x_content_type,
+        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Accept-Ranges": "bytes",
+    }
+
+    return StreamingResponse(
+        chunk_iter,
+        headers=headers,
+        media_type=x_content_type,
+    )

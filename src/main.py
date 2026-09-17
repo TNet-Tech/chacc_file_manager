@@ -62,6 +62,13 @@ def setup_plugin(context: Optional[BackboneContext] = None):
     _module_context.register_service("register_file_adapter", register_file_adapter)
     _module_context.register_service("file_base_adapter", BaseAdapter)
 
+    try:
+        from .stream_service import startup_cleanup_orphaned_streams
+        startup_cleanup_orphaned_streams()
+        _module_context.logger.info("chacc_file_manager: Cleaned up orphaned stream directories")
+    except Exception as e:
+        _module_context.logger.warning(f"chacc_file_manager: Failed to cleanup orphaned streams: {e}")
+
     chacc_file_manager_router.include_router(health_router)
     return chacc_file_manager_router
 

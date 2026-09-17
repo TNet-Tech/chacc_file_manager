@@ -1,6 +1,7 @@
 import aiofiles
 import mimetypes
 import os
+import shutil
 from pathlib import Path
 from typing import AsyncIterable, Optional, Union
 from fastapi import Request, HTTPException
@@ -38,12 +39,17 @@ class LocalAdapter(BaseAdapter):
                 async with aiofiles.open(temp_path, "wb") as f:
                     await f.write(content)
             else:
-                content.rename(temp_path)
+                # Use shutil.move instead of Path.rename to support cross-device moves
+                # (e.g. /tmp -> /home). Falls back to copy+delete if rename fails.
+                shutil.move(str(content), str(temp_path))
             os.rename(str(temp_path), str(full_path))
             return {"storage_key": file_uuid, "adapter": self.name}
         except Exception:
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             raise
         
     async def delete(self, storage_key: str) -> bool:

@@ -448,6 +448,93 @@ Resolution order:
 | `/files/module-mappings` | POST | Admin | Create module-to-adapter mapping |
 | `/files/module-mappings/{module_name}` | DELETE | Admin | Delete module-to-adapter mapping |
 
+### Resumable Streaming Upload
+
+Large files (e.g. NDJSON, logs) can be uploaded in chunks that survive network interruptions. Each request uploads a single chunk; the final chunk triggers verification, assembly, checksum computation, and storage via the normal `FileService` pipeline.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/files/stream-upload` | POST | Module | Upload one chunk. Set `X-Final-Chunk: true` on the last chunk to finalize. |
+| `/files/stream/{stream_id}` | GET | Module | Retrieve an in-progress or incomplete stream (e.g. partial NDJSON). |
+
+#### Request Headers (`POST /files/stream-upload`)
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Stream-ID` | Yes | Unique session identifier. Sanitized to `[a-zA-Z0-9_-]`. |
+| `X-File-Name` | Yes | Desired final filename. Reduced to basename only. |
+| `X-Chunk-Number` | Yes | 1-indexed chunk number. |
+| `X-Final-Chunk` | Yes | `true` or `false`. |
+| `X-Total-Chunks` | No | Total expected chunks. Defaults to `X-Chunk-Number` if omitted. |
+| `X-Content-Type` | No | MIME type (default `application/octet-stream`). |
+| `X-Created-By-Module` | No | Owning module (default `chacc_file_manager`). |
+| `X-Channel` | No | Optional channel for module-scoped storage. |
+| `X-Duplicate-Policy` | No | `reject` (default), `share`, or `allow`. |
+
+#### Response (`POST /files/stream-upload`)
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `202` | `{"status": "receiving", "message": "Chunk N received"}` | Chunk stored, more expected. |
+| `201` | `{"status": "completed", "file_uuid": "...", "filename": "...", "size": N, "storage_key": "...", "message": "..."}` | Final chunk received, file assembled and stored. |
+| `400` | `{"status": "incomplete", "message": "...", "missing_chunks": [...]}` | Final chunk received but some chunks are missing. |
+| `409` | `{"detail": "File already exists", "X-Existing-File-Uuid": "..."}` | Duplicate detected and policy is `reject`. |
+| `500` | `{"detail": "..."}` | Write or assembly failure. |
+
+#### Retrieving an Incomplete Stream (`GET /files/stream/{stream_id}`)
+
+Useful for recovering partially uploaded data (e.g. NDJSON that may be corrupt but still readable). Chunks are concatenated in numeric order based on their zero-padded filenames.
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-File-Name` | No | Filename for `Content-Disposition`. |
+| `X-Content-Type` | No | MIME type (default `application/octet-stream`). |
+
+Returns `404` if the stream does not exist or contains no chunks.
+
+#### Example: NDJSON Chunked Upload
+
+```python
+import json
+import requests
+
+STREAM_URL = "http://localhost:8085/api/files/stream-upload"
+STREAM_ID = "my-session-1"
+FILE_NAME = "records.jsonl"
+
+records = [{"id": i, "name": f"record-{i}"} for i in range(100)]
+CHUNK_SIZE = 10
+total_chunks = (len(records) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+for start in range(0, len(records), CHUNK_SIZE):
+    chunk_num = start // CHUNK_SIZE + 1
+    chunk = records[start:start + CHUNK_SIZE]
+    ndjson = "\n".join(json.dumps(r, separators=(",", ":")) for r in chunk)
+
+    resp = requests.post(
+        STREAM_URL,
+        headers={
+            "Content-Type": "application/x-ndjson",
+            "X-Stream-ID": STREAM_ID,
+            "X-File-Name": FILE_NAME,
+            "X-Chunk-Number": str(chunk_num),
+            "X-Total-Chunks": str(total_chunks),
+            "X-Final-Chunk": "true" if chunk_num == total_chunks else "false",
+        },
+        data=ndjson.encode("utf-8"),
+    )
+    resp.raise_for_status()
+    print(resp.json())
+```
+
+#### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHACC_STREAM_TEMP_DIR` | `/tmp/chacc_streams` | Directory for streaming chunk files. |
+
+On startup, any orphaned stream directories from previous runs are automatically removed.
+
 ## Response Headers
 
 Successful file serves include:

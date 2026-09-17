@@ -121,9 +121,14 @@ record = await file_service.save_file(
     created_by_module="menu",  # identifies which ChaCC module owns the file
     created_by_user_id=current_user.id,  # Optional: track ownership per user
     channel="images",          # optional, only used if module mapping sets use_module_dir=true
+    duplicate_policy="reject",  # "reject" (default), "share", or "allow"
     db_session=db,
 )
 ```
+
+- `duplicate_policy="reject"` — raise `DuplicateFileError` if an identical file (same checksum + module) already exists.
+- `duplicate_policy="share"` — reuse existing storage, return a new `FileRecord` pointing to the same file.
+- `duplicate_policy="allow"` — always store as a new file, even if identical.
 
 `created_by_module` identifies which ChaCC module owns the file. This is used for deduplication (files are deduplicated per module), adapter routing (modules can be mapped to different storage backends), and storage organization (module directories). It is not a user ID—use `created_by_user_id` for user-level ownership.
 
@@ -239,6 +244,7 @@ async def require_image_dimensions(payload, metadata, is_path):
 
 - `FileTooLargeError` — File exceeds `MAX_FILE_SIZE`.
 - `InvalidContentTypeError` — Content type not in `ALLOWED_CONTENT_TYPES`.
+- `DuplicateFileError` — A file with the same checksum already exists for the same module (when `duplicate_policy="reject"`).
 - `ValueError` — `db_session` is `None`.
 - `TypeError` — Stream yields non-bytes chunks.
 - Any exception raised by validation hooks (wrapped in `await hook(...)`).
@@ -492,6 +498,30 @@ Useful for recovering partially uploaded data (e.g. NDJSON that may be corrupt b
 
 Returns `404` if the stream does not exist or contains no chunks.
 
+#### Example: Retrieve an Incomplete Stream
+
+```python
+import requests
+
+STREAM_URL = "http://localhost:8085/api/files/stream/my-session-1"
+
+resp = requests.get(
+    STREAM_URL,
+    headers={
+        "X-File-Name": "records.jsonl",
+        "X-Content-Type": "application/x-ndjson",
+    },
+)
+
+if resp.status_code == 200:
+    with open("records.jsonl", "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print(f"Downloaded {len(resp.content)} bytes")
+elif resp.status_code == 404:
+    print("Stream not found or empty")
+```
+
 #### Example: NDJSON Chunked Upload
 
 ```python
@@ -525,6 +555,19 @@ for start in range(0, len(records), CHUNK_SIZE):
     )
     resp.raise_for_status()
     print(resp.json())
+```
+
+Then retrieve the assembled stream:
+
+```python
+resp = requests.get(
+    f"{STREAM_URL}/{STREAM_ID}",
+    headers={
+        "X-File-Name": FILE_NAME,
+        "X-Content-Type": "application/x-ndjson",
+    },
+)
+print(resp.text)
 ```
 
 #### Configuration

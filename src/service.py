@@ -36,9 +36,9 @@ def get_base_url_prefix() -> str:
         with open(MODULE_META_PATH, "r") as f:
             meta = json.load(f)
         meta_prefix = meta.get("base_path_prefix", "/files")
-        return f'/api/{meta_prefix}'
+        return f'{meta_prefix}'
     except (FileNotFoundError, json.JSONDecodeError):
-        return "/api/files"
+        return "/files"
 
 
 def get_content_url(file_uuid: str) -> str:

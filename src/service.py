@@ -200,14 +200,20 @@ class FileService(BaseFileService):
                 "allowed_content_types": set(),
             }
 
-        max_file_size = context.get_module_config(
-            "MAX_FILE_SIZE", "chacc_file_manager", default=10 * 1024 * 1024
+        max_file_size = int(
+            context.get_module_config(
+                "MAX_FILE_SIZE", "chacc_file_manager", default=10 * 1024 * 1024
+            )
         )
-        stream_threshold = context.get_module_config(
-            "STREAM_THRESHOLD", "chacc_file_manager", default=10 * 1024 * 1024
+        stream_threshold = int(
+            context.get_module_config(
+                "STREAM_THRESHOLD", "chacc_file_manager", default=10 * 1024 * 1024
+            )
         )
-        chunk_size = context.get_module_config(
-            "UPLOAD_CHUNK_SIZE", "chacc_file_manager", default=8192
+        chunk_size = int(
+            context.get_module_config(
+                "UPLOAD_CHUNK_SIZE", "chacc_file_manager", default=8192
+            )
         )
         allowed_types_str = context.get_module_config(
             "ALLOWED_CONTENT_TYPES", "chacc_file_manager", default=""

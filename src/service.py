@@ -31,14 +31,17 @@ MODULE_META_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mod
 
 
 def get_base_url_prefix() -> str:
-    """Read base_path_prefix from module_meta.json. Sync, usable anywhere."""
+    """Read base_path_prefix from module_meta.json. Sync, usable anywhere.
+
+    "/api" is prepended to plugin routes at mount time, so it's added here to match.
+    """
     try:
         with open(MODULE_META_PATH, "r") as f:
             meta = json.load(f)
         meta_prefix = meta.get("base_path_prefix", "/files")
-        return f'{meta_prefix}'
     except (FileNotFoundError, json.JSONDecodeError):
-        return "/files"
+        meta_prefix = "/files"
+    return f"/api{meta_prefix}"
 
 
 def get_content_url(file_uuid: str) -> str:

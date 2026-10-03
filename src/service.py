@@ -422,7 +422,7 @@ class FileService(BaseFileService):
         )
         target = result.scalar_one_or_none()
         if target:
-            db_session.delete(target)
+            await db_session.delete(target)
             await db_session.flush()
         return True
 

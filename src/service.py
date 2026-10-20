@@ -31,12 +31,14 @@ MODULE_META_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mod
 
 
 def get_base_url_prefix() -> str:
-    """Read base_path_prefix from module_meta.json. Sync, usable anywhere."""
+    """Read base_path_prefix from module_meta.json. Sync, usable anywhere.
+
+    Keep URLs plugin-relative;
+    """
     try:
         with open(MODULE_META_PATH, "r") as f:
             meta = json.load(f)
-        meta_prefix = meta.get("base_path_prefix", "/files")
-        return f'{meta_prefix}'
+        return meta.get("base_path_prefix", "/files")
     except (FileNotFoundError, json.JSONDecodeError):
         return "/files"
 
@@ -200,14 +202,20 @@ class FileService(BaseFileService):
                 "allowed_content_types": set(),
             }
 
-        max_file_size = context.get_module_config(
-            "MAX_FILE_SIZE", "chacc_file_manager", default=10 * 1024 * 1024
+        max_file_size = int(
+            context.get_module_config(
+                "MAX_FILE_SIZE", "chacc_file_manager", default=10 * 1024 * 1024
+            )
         )
-        stream_threshold = context.get_module_config(
-            "STREAM_THRESHOLD", "chacc_file_manager", default=10 * 1024 * 1024
+        stream_threshold = int(
+            context.get_module_config(
+                "STREAM_THRESHOLD", "chacc_file_manager", default=10 * 1024 * 1024
+            )
         )
-        chunk_size = context.get_module_config(
-            "UPLOAD_CHUNK_SIZE", "chacc_file_manager", default=8192
+        chunk_size = int(
+            context.get_module_config(
+                "UPLOAD_CHUNK_SIZE", "chacc_file_manager", default=8192
+            )
         )
         allowed_types_str = context.get_module_config(
             "ALLOWED_CONTENT_TYPES", "chacc_file_manager", default=""
@@ -413,7 +421,7 @@ class FileService(BaseFileService):
         )
         target = result.scalar_one_or_none()
         if target:
-            db_session.delete(target)
+            await db_session.delete(target)
             await db_session.flush()
         return True
 

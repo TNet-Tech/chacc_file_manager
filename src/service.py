@@ -33,7 +33,7 @@ MODULE_META_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mod
 def get_base_url_prefix() -> str:
     """Read base_path_prefix from module_meta.json. Sync, usable anywhere.
 
-    Keep URLs plugin-relative; the frontend BASE_URL already includes the API prefix.
+    Keep URLs plugin-relative;
     """
     try:
         with open(MODULE_META_PATH, "r") as f:

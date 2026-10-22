@@ -52,6 +52,8 @@ async def list_module_mappings(db=Depends(get_async_db)):
 @router.post("/module-mappings", status_code=status.HTTP_201_CREATED)
 async def create_module_mapping(mapping: ModuleMappingCreate, db=Depends(get_async_db)):
     """Create module-to-adapter mapping."""
+    from sqlalchemy.exc import IntegrityError
+
     if mapping.adapter_name not in AdapterRegistry._adapters:
         raise HTTPException(status_code=400, detail="Adapter not registered")
     db_mapping = ModuleAdapterMapping(
@@ -61,7 +63,11 @@ async def create_module_mapping(mapping: ModuleMappingCreate, db=Depends(get_asy
         description=mapping.description,
     )
     db.add(db_mapping)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Mapping already exists")
     return {"module_name": db_mapping.module_name, "adapter_name": db_mapping.adapter_name, "use_module_dir": db_mapping.use_module_dir}
 
 
@@ -71,9 +77,10 @@ async def delete_module_mapping(module_name: str, db=Depends(get_async_db)):
     from sqlalchemy import select
     result = await db.execute(select(ModuleAdapterMapping).where(ModuleAdapterMapping.module_name == module_name))
     mapping = result.scalar_one_or_none()
-    if mapping:
-        db.delete(mapping)
-        await db.commit()
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Module mapping not found")
+    await db.delete(mapping)
+    await db.commit()
 
 
 @router.get("/{uuid}/content")

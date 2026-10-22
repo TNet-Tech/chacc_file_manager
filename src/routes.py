@@ -167,7 +167,7 @@ async def upload_file(
         raise HTTPException(
             status_code=409,
             detail="File already exists",
-            headers={"X-Existing-File-Uuid": existing.uuid} if existing else None,
+            headers={"X-Existing-File-Uuid": str(existing.uuid)} if existing else None,
         )
 
 
@@ -256,8 +256,11 @@ async def stream_upload(
         raise HTTPException(
             status_code=409,
             detail="File already exists",
-            headers={"X-Existing-File-Uuid": existing.uuid} if existing else None,
+            headers={"X-Existing-File-Uuid": str(existing.uuid)} if existing else None,
         )
+    except (FileTooLargeError, InvalidContentTypeError) as e:
+        background_tasks.add_task(cleanup_stream_dir, x_stream_id)
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException as e:
         background_tasks.add_task(cleanup_stream_dir, x_stream_id)
         raise

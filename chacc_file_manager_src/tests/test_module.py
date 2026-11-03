@@ -12,6 +12,31 @@ from ..exceptions import (
 )
 
 
+class _FakeMappingResult:
+    def scalar_one_or_none(self):
+        return None
+
+
+class FakeSession:
+    """Minimal async db session double for save_file tests. execute() reports
+    no per-module adapter mapping, matching every test's lack of one."""
+
+    def __init__(self):
+        self.added_records = []
+
+    async def execute(self, *args, **kwargs):
+        return _FakeMappingResult()
+
+    def add(self, record):
+        self.added_records.append(record)
+
+    async def flush(self):
+        pass
+
+    async def refresh(self, record):
+        pass
+
+
 def test_models_import():
     assert FileRecord is not None
     assert ModuleAdapterMapping is not None
@@ -143,8 +168,6 @@ async def test_save_file_reject_policy_raises_duplicate_error():
 
         service._check_duplicate = fake_check
 
-        fake_db = object()
-
         with pytest.raises(DuplicateFileError) as exc:
             await service.save_file(
                 file=b"data",
@@ -152,7 +175,7 @@ async def test_save_file_reject_policy_raises_duplicate_error():
                 content_type="image/png",
                 created_by_module="menu",
                 channel="images",
-                db_session=fake_db,
+                db_session=FakeSession(),
                 duplicate_policy="reject",
             )
         assert exc.value.existing_record is existing
@@ -189,17 +212,7 @@ async def test_save_file_share_policy_reuses_storage_key():
 
         service._check_duplicate = fake_check
 
-        added_records = []
-
-        class FakeSession:
-            async def add(self, record):
-                added_records.append(record)
-
-            async def flush(self):
-                pass
-
-            async def refresh(self, record):
-                pass
+        fake_session = FakeSession()
 
         record = await service.save_file(
             file=b"data",
@@ -207,15 +220,15 @@ async def test_save_file_share_policy_reuses_storage_key():
             content_type="image/png",
             created_by_module="menu",
             channel="images",
-            db_session=FakeSession(),
+            db_session=fake_session,
             duplicate_policy="share",
         )
 
         assert record.uuid != existing.uuid
         assert record.storage_key == existing.storage_key
         assert record.checksum == existing.checksum
-        assert len(added_records) == 1
-        assert added_records[0].storage_key == existing.storage_key
+        assert len(fake_session.added_records) == 1
+        assert fake_session.added_records[0].storage_key == existing.storage_key
         assert not await adapter.exists(record.uuid)
         assert await adapter.exists(existing.storage_key)
 
@@ -251,29 +264,19 @@ async def test_save_file_allow_policy_stores_separate_bytes():
 
         service._check_duplicate = fake_check
 
-        added_records = []
-
-        class FakeSession:
-            async def add(self, record):
-                added_records.append(record)
-
-            async def flush(self):
-                pass
-
-            async def refresh(self, record):
-                pass
+        fake_session = FakeSession()
 
         record = await service.save_file(
             file=b"data",
             filename="dup.png",
             content_type="image/png",
             created_by_module="menu",
-            db_session=FakeSession(),
+            db_session=fake_session,
             duplicate_policy="allow",
         )
 
         assert record.storage_key != existing.storage_key
-        assert len(added_records) == 1
+        assert len(fake_session.added_records) == 1
         assert await adapter.exists(record.storage_key)
         assert await adapter.exists(existing.storage_key)
 

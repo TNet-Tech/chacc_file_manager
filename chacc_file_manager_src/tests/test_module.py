@@ -207,6 +207,8 @@ async def test_save_file_share_policy_reuses_storage_key():
             checksum="known",
         )
 
+        await adapter.save(existing.storage_key, b"original-bytes", "image/png")
+
         async def fake_check(db, checksum, module, include_module=True):
             return existing
 
@@ -258,6 +260,8 @@ async def test_save_file_allow_policy_stores_separate_bytes():
             created_by_module="menu",
             checksum="known",
         )
+
+        await adapter.save(existing.storage_key, b"original-bytes", "image/png")
 
         async def fake_check(db, checksum, module, include_module=True):
             return existing
